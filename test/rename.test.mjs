@@ -38,8 +38,8 @@ const agentPane = (paneId, tabId, title, extra = {}) => ({
   workspace_id: tabId.split(":")[0],
   agent: "claude",
   agent_status: "idle",
-  cwd: "$HOME/dev/notes",
-  foreground_cwd: "$HOME/dev/notes",
+  cwd: "$HOME/dev/myapp",
+  foreground_cwd: "$HOME/dev/myapp",
   focused: false,
   ...(title === undefined
     ? {}
@@ -219,10 +219,10 @@ test("shell tab gets `<n> ⌂ <~cwd>`", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
-      panes: [shellPane("w1:p1", "w1:t1", "$HOME/dev/notes")],
+      panes: [shellPane("w1:p1", "w1:t1", "$HOME/dev/myapp")],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/dev/notes"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/dev/myapp"]], r.stderr);
 });
 
 test("shell cwd outside HOME kept verbatim; case preserved", () => {
@@ -301,11 +301,11 @@ test("agent exit back to shell relabels an owned tab", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1 · task")],
-      panes: [shellPane("w1:p1", "w1:t1", "$HOME/dev/notes")],
+      panes: [shellPane("w1:p1", "w1:t1", "$HOME/dev/myapp")],
     },
     state: { "w1:t1": "1 · task" },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/dev/notes"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/dev/myapp"]], r.stderr);
 });
 
 test("no-op when label already matches", () => {
@@ -337,7 +337,7 @@ test("split tab: first agent pane wins over a lower-numbered shell", () => {
     world: {
       tabs: [tab("w1:t1", 1, "1", { pane_count: 2 })],
       panes: [
-        shellPane("w1:p1", "w1:t1", "$HOME/dev/notes", { focused: true }),
+        shellPane("w1:p1", "w1:t1", "$HOME/dev/myapp", { focused: true }),
         agentPane("w1:p2", "w1:t1", "the task"),
       ],
     },
@@ -391,22 +391,22 @@ test("default label is display position, not tab number (gap after closed tabs)"
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "user-named"), tab("w1:t5", 5, "2")],
-      panes: [shellPane("w1:p6", "w1:t5", "$HOME/dev/notes")],
+      panes: [shellPane("w1:p6", "w1:t5", "$HOME/dev/myapp")],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t5", "2 ⌂ ~/dev/notes"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t5", "2 ⌂ ~/dev/myapp"]], r.stderr);
 });
 
 test("owned label's position prefix self-heals after tabs shift", () => {
   // t5 was 2nd when we labelled it; the tab before it has since closed.
   const r = run({
     world: {
-      tabs: [tab("w1:t5", 5, "2 ⌂ ~/dev/notes")],
-      panes: [shellPane("w1:p6", "w1:t5", "$HOME/dev/notes")],
+      tabs: [tab("w1:t5", 5, "2 ⌂ ~/dev/myapp")],
+      panes: [shellPane("w1:p6", "w1:t5", "$HOME/dev/myapp")],
     },
-    state: { "w1:t5": "2 ⌂ ~/dev/notes" },
+    state: { "w1:t5": "2 ⌂ ~/dev/myapp" },
   });
-  assert.deepEqual(r.calls, [["w1:t5", "1 ⌂ ~/dev/notes"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t5", "1 ⌂ ~/dev/myapp"]], r.stderr);
 });
 
 test("positions are per-workspace, in list order", () => {
@@ -440,13 +440,13 @@ test("global sweep renames only eligible tabs", () => {
       panes: [
         agentPane("w1:p1", "w1:t1", "task one"),
         agentPane("w1:p2", "w1:t2", "blocked task"),
-        shellPane("w2:p1", "w2:t1", "$HOME/dev/notes"),
+        shellPane("w2:p1", "w2:t1", "$HOME/dev/myapp"),
       ],
     },
   });
   assert.deepEqual(Object.fromEntries(r.calls), {
     "w1:t1": "1 · task one",
-    "w2:t1": "1 ⌂ ~/dev/notes",
+    "w2:t1": "1 ⌂ ~/dev/myapp",
   }, r.stderr);
 });
 

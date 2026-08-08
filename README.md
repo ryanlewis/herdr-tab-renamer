@@ -3,7 +3,7 @@
 A [herdr](https://herdr.dev) plugin that keeps default-named tabs labelled
 after their live content. A tab running an agent becomes `1 · pr reviews`
 (number, live session title — or `1 · claude` until a title exists); a plain
-shell tab becomes `1 ⌂ ~/dev/notes` (number, current directory). A tab you
+shell tab becomes `1 ⌂ ~/dev/myapp` (number, current directory). A tab you
 renamed yourself is never touched — manual names win, permanently.
 
 ## Why
