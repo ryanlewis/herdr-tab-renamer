@@ -252,9 +252,14 @@ function main() {
   const position = new Map();
   const perWs = new Map();
   for (const t of tabs) {
-    const n = (perWs.get(t?.workspace_id) ?? 0) + 1;
-    perWs.set(t?.workspace_id, n);
-    position.set(t?.tab_id, n);
+    // A malformed record must get NO position (→ skipped by the guard), not a
+    // shared-bucket ordinal that could miscount.
+    if (typeof t?.workspace_id !== "string" || typeof t?.tab_id !== "string") {
+      continue;
+    }
+    const n = (perWs.get(t.workspace_id) ?? 0) + 1;
+    perWs.set(t.workspace_id, n);
+    position.set(t.tab_id, n);
   }
 
   const state = readState();

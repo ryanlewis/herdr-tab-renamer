@@ -38,8 +38,8 @@ const agentPane = (paneId, tabId, title, extra = {}) => ({
   workspace_id: tabId.split(":")[0],
   agent: "claude",
   agent_status: "idle",
-  cwd: "/Users/ryan/dev/notes",
-  foreground_cwd: "/Users/ryan/dev/notes",
+  cwd: "$HOME/dev/notes",
+  foreground_cwd: "$HOME/dev/notes",
   focused: false,
   ...(title === undefined
     ? {}
@@ -134,11 +134,11 @@ test("long title capped at 30 code points", () => {
     world: {
       tabs: [tab("w1:t1", 1, "1")],
       panes: [
-        agentPane("w1:p1", "w1:t1", "Implement GET /v1/recent admin endpoint for dashboard widget"),
+        agentPane("w1:p1", "w1:t1", "Rework the ingest pipeline for cold-start latency"),
       ],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 · implement get /v1/recent admin"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · rework the ingest pipeline for"]], r.stderr);
 });
 
 test("title cap counts code points, never splits a surrogate pair", () => {
