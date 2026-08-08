@@ -162,7 +162,7 @@ test("non-ASCII title kept verbatim", () => {
 });
 
 test("pre-summary product-name titles fall back to the agent name", () => {
-  for (const noise of ["Claude", "Claude Code", "claude: notes"]) {
+  for (const noise of ["Claude", "Claude Code", "claude: myapp"]) {
     const r = run({
       world: {
         tabs: [tab("w1:t1", 1, "1")],
