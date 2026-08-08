@@ -90,11 +90,11 @@ function pickPane(panes) {
 
 // The label a tab *should* have, or null for "no opinion" (which always
 // collapses to the no-op path — a surprise can never cause a rename).
-function computeLabel(tab, panes) {
+function computeLabel(pos, panes) {
   const pane = pickPane(panes);
   if (!pane) return null;
   if (typeof pane.agent === "string" && pane.agent !== "") {
-    let label = `${tab.number} ${AGENT_MARK} ${pane.agent}`;
+    let label = `${pos} ${AGENT_MARK} ${pane.agent}`;
     const raw = pane.terminal_title_stripped;
     if (typeof raw === "string") {
       const title = cleanTitle(raw);
@@ -108,7 +108,7 @@ function computeLabel(tab, panes) {
   }
   const cwd = pane.foreground_cwd || pane.cwd;
   if (typeof cwd !== "string" || cwd === "") return null;
-  return `${tab.number} ${SHELL_MARK} ${cleanCwd(cwd)}`;
+  return `${pos} ${SHELL_MARK} ${cleanCwd(cwd)}`;
 }
 
 function readState() {
@@ -201,6 +201,19 @@ function main() {
     return;
   }
 
+  // A tab's default label is its 1-based DISPLAY POSITION in the workspace,
+  // not its immutable number (close tab 2 of 3 and the old "3" is re-labelled
+  // "2" live; its tab_id/number stay put). Derive positions from list order
+  // within each workspace — both the ownership guard and the label prefix
+  // depend on it.
+  const position = new Map();
+  const perWs = new Map();
+  for (const t of tabs) {
+    const n = (perWs.get(t?.workspace_id) ?? 0) + 1;
+    perWs.set(t?.workspace_id, n);
+    position.set(t?.tab_id, n);
+  }
+
   const state = readState();
   let stateDirty = false;
 
@@ -216,18 +229,15 @@ function main() {
   for (const tab of tabs) {
     const tabId = tab?.tab_id;
     const label = tab?.label;
-    if (
-      typeof tabId !== "string" ||
-      typeof label !== "string" ||
-      typeof tab?.number !== "number"
-    ) {
-      continue;
-    }
+    const pos = position.get(tabId);
+    if (typeof tabId !== "string" || typeof label !== "string") continue;
 
-    // Ownership guard: only touch a label that is the default (the bare tab
-    // number) or our own last write. Anything else → the user named this tab,
-    // and their choice is permanent.
-    if (label !== String(tab.number) && label !== state[tabId]) {
+    // Ownership guard: only touch a label that is the default (the bare
+    // display position) or our own last write. Anything else → the user named
+    // this tab, and their choice is permanent. (Accepted ambiguity: a user who
+    // manually names a tab the bare digit matching its current position is
+    // indistinguishable from default and gets adopted.)
+    if (label !== String(pos) && label !== state[tabId]) {
       if (tabId in state) {
         // user overrode our write — locked from now on
         delete state[tabId];
@@ -236,7 +246,7 @@ function main() {
       continue;
     }
 
-    const want = computeLabel(tab, panes.filter((p) => p?.tab_id === tabId));
+    const want = computeLabel(pos, panes.filter((p) => p?.tab_id === tabId));
     if (typeof want !== "string" || want === "") continue;
 
     if (want === label) continue; // already in sync — no rename, no loop

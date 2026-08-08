@@ -353,6 +353,47 @@ test("global sweep renames only eligible tabs", () => {
   }, r.stderr);
 });
 
+test("default label is display position, not tab number (gap after closed tabs)", () => {
+  // Tabs 2–4 were closed: t5 is the workspace's 2nd tab, default label "2".
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "user-named"), tab("w1:t5", 5, "2")],
+      panes: [shellPane("w1:p6", "w1:t5", "$HOME/dev/notes")],
+    },
+  });
+  assert.deepEqual(r.calls, [["w1:t5", "2 ⌂ ~/dev/notes"]], r.stderr);
+});
+
+test("owned label's position prefix self-heals after tabs shift", () => {
+  // t5 was 2nd when we labelled it; the tab before it has since closed.
+  const r = run({
+    world: {
+      tabs: [tab("w1:t5", 5, "2 ⌂ ~/dev/notes")],
+      panes: [shellPane("w1:p6", "w1:t5", "$HOME/dev/notes")],
+    },
+    state: { "w1:t5": "2 ⌂ ~/dev/notes" },
+  });
+  assert.deepEqual(r.calls, [["w1:t5", "1 ⌂ ~/dev/notes"]], r.stderr);
+});
+
+test("positions are per-workspace, in list order", () => {
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "1"), tab("w1:t3", 3, "2"), tab("w2:t7", 7, "1")],
+      panes: [
+        shellPane("w1:p1", "w1:t1", "$HOME/a"),
+        shellPane("w1:p3", "w1:t3", "$HOME/b"),
+        shellPane("w2:p9", "w2:t7", "$HOME/c"),
+      ],
+    },
+  });
+  assert.deepEqual(Object.fromEntries(r.calls), {
+    "w1:t1": "1 ⌂ ~/a",
+    "w1:t3": "2 ⌂ ~/b",
+    "w2:t7": "1 ⌂ ~/c",
+  }, r.stderr);
+});
+
 test("dead tab's state entry pruned", () => {
   const r = run({
     world: {
