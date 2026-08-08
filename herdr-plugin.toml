@@ -11,8 +11,12 @@ command = ["node", "rename.mjs"]
 [[events]]
 on = "pane.agent_status_changed"   # main heartbeat: fires on every turn boundary
 command = ["node", "rename.mjs"]
+# NOTE: pane.exited does NOT fire when an agent quits back to the shell (the
+# pane survives; only the child dies) — that flip rides in on a
+# pane.agent_detected re-evaluation. Kept as a cheap extra trigger for panes
+# whose root process does exit.
 [[events]]
-on = "pane.exited"                 # agent quit back to the shell
+on = "pane.exited"
 command = ["node", "rename.mjs"]
 [[events]]
 on = "pane.created"                # fresh tab/split gets named immediately

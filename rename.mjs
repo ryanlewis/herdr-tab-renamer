@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Tab Renamer — keep default-named herdr tabs labelled after their live
-// content: `<number> ✦ <agent>[ · <title>]` for agent tabs, `<number> ⌂ <~cwd>`
-// for shell tabs. Global idempotent reconcile: every invocation sweeps all
-// tabs (event payload ignored), so a missed event self-heals on the next one.
-// A tab whose label isn't the default (or our own last write) is never
-// touched — manual names win, permanently.
+// content: `<number> · <title>` for agent tabs (falling back to the agent's
+// name until a real session title exists), `<number> ⌂ <~cwd>` for shell
+// tabs. Global idempotent reconcile: every invocation sweeps all tabs (event
+// payload ignored), so a missed event self-heals on the next one. A tab whose
+// label isn't the default (or our own last write) is never touched — manual
+// names win, permanently.
 //
 // Fail-safe posture: any parse/shape surprise → skip + one line to stderr.
 // Doing nothing is always acceptable; a wrong rename is the only real failure.
@@ -18,6 +19,7 @@ import {
   closeSync,
   renameSync,
   unlinkSync,
+  utimesSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -26,15 +28,22 @@ import { homedir } from "node:os";
 const DRY = process.argv.includes("--dry-run");
 const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const HOME = homedir();
-const STATE_DIR = process.env.HERDR_PLUGIN_STATE_DIR || null;
-const DEBOUNCE_MS = 250;
+// --dry-run from a plain shell must read the real ownership state or the
+// preview diverges from event-driven behaviour, so herdr's default plugin
+// state path fills in when the env var is absent. Real runs still require the
+// env var — its presence is the proof we're running under herdr.
+const STATE_DIR =
+  process.env.HERDR_PLUGIN_STATE_DIR ||
+  (DRY
+    ? join(HOME, ".local", "state", "herdr", "plugins", "io.rlew.tab-renamer")
+    : null);
 const LOCK_STALE_MS = 30_000;
-const MAX_TITLE = 30; // code points, session-title suffix
+const RETRY_WINDOW_MS = 3_000;
+const MAX_TITLE = 30; // code points, session title
 const MAX_CWD = 30; // code points, shell-tab path (tail kept)
 
-const AGENT_MARK = "✦";
+const AGENT_MARK = "·";
 const SHELL_MARK = "⌂";
-const SEP = " · ";
 
 const warn = (msg) => process.stderr.write(`tab-renamer: ${msg}\n`);
 
@@ -52,13 +61,13 @@ function herdr(...args) {
 const tildify = (p) =>
   p === HOME ? "~" : p.startsWith(HOME + "/") ? "~" + p.slice(HOME.length) : p;
 
-// Session-title suffix: strip control chars, collapse whitespace, lowercase
-// (natural spacing kept — the separator is " · ", no re-slugging). The cap
-// counts code points, not UTF-16 units, so it can't split a surrogate pair.
+// Session title: strip non-whitespace control chars (tabs/newlines survive to
+// become spaces), collapse whitespace, lowercase. The cap counts code points,
+// not UTF-16 units, so it can't split a surrogate pair.
 function cleanTitle(s) {
   const scrubbed = s
-    .replace(/\s+/g, " ") // before control-strip so \t and \n become spaces
-    .replace(/[\x00-\x1f\x7f]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
   return [...scrubbed].slice(0, MAX_TITLE).join("").trim();
@@ -94,22 +103,29 @@ function computeLabel(pos, panes) {
   const pane = pickPane(panes);
   if (!pane) return null;
   if (typeof pane.agent === "string" && pane.agent !== "") {
-    let label = `${pos} ${AGENT_MARK} ${pane.agent}`;
     const raw = pane.terminal_title_stripped;
-    if (typeof raw === "string") {
-      const title = cleanTitle(raw);
-      // Before the first task summary, agents title the terminal with their
-      // own product name ("claude", "claude code") — that adds nothing, skip.
-      const norm = (s) => s.replace(/[^a-z0-9]+/g, "");
-      const noise = [norm(pane.agent.toLowerCase()), norm(pane.agent.toLowerCase()) + "code"];
-      if (title && !noise.includes(norm(title))) label += `${SEP}${title}`;
+    let title = typeof raw === "string" ? cleanTitle(raw) : "";
+    // Before the first task summary, agents title the terminal with their own
+    // product name — "claude", "claude code", "claude: <dir>". Treat those
+    // shapes as no-title. Matching stays exact so a real summary that merely
+    // resembles the name (e.g. "claude-code") survives.
+    const a = pane.agent.toLowerCase();
+    if (title === a || title === `${a} code` || title.startsWith(`${a}: `)) {
+      title = "";
     }
-    return label;
+    // A titled tab shows the title alone (shell tabs keep the distinct ⌂
+    // marker); the agent's name is only the fallback until a title exists.
+    return `${pos} ${AGENT_MARK} ${title || pane.agent}`;
   }
   const cwd = pane.foreground_cwd || pane.cwd;
   if (typeof cwd !== "string" || cwd === "") return null;
   return `${pos} ${SHELL_MARK} ${cleanCwd(cwd)}`;
 }
+
+// ---- state, lock, sweep coverage --------------------------------------
+// This machinery is vendored by design (zero-dep installs) and mirrors
+// github.com/ryanlewis/herdr-workspace-renamer's sync.mjs — when fixing a bug
+// here, port it there (and vice versa).
 
 function readState() {
   if (!STATE_DIR) return {};
@@ -121,8 +137,10 @@ function readState() {
   }
 }
 
+// Returns false when the state could not be persisted — callers must then
+// abandon any renames that depend on it.
 function writeState(state) {
-  if (!STATE_DIR || DRY) return;
+  if (!STATE_DIR || DRY) return true;
   try {
     mkdirSync(STATE_DIR, { recursive: true });
     // Atomic replace: a torn state.json would make readState() return {} in a
@@ -132,17 +150,18 @@ function writeState(state) {
     const tmp = join(STATE_DIR, `state.json.tmp-${process.pid}`);
     writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n");
     renameSync(tmp, join(STATE_DIR, "state.json"));
+    return true;
   } catch (e) {
     warn(`state write failed: ${e.message}`);
+    return false;
   }
 }
 
 // Serialize whole sweeps: overlapping event-triggered processes would race on
-// read-modify-write of state.json (last writer drops the other's entries, with
-// the same permanent-lockout consequence as a torn read). Losing the lock just
-// means another sweep is reconciling right now — the next event's sweep covers
-// any gap. A lock older than LOCK_STALE_MS is from a crashed sweep and is
-// stolen.
+// read-modify-write of state.json (last writer drops the other's entries,
+// with the same permanent-lockout consequence as a torn read). A lock whose
+// mtime is older than LOCK_STALE_MS is from a crashed sweep — live sweeps
+// refresh it via touchLock() between herdr calls.
 function acquireLock() {
   if (!STATE_DIR || DRY) return true; // nothing to serialize against
   const lock = join(STATE_DIR, ".lock");
@@ -153,47 +172,71 @@ function acquireLock() {
   } catch {
     try {
       if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
-        writeFileSync(lock, String(process.pid));
+        // Steal atomically: rename is exclusive, so exactly one of any
+        // concurrent stealers evicts the stale lock (the losers throw
+        // ENOENT), then the vacated slot is contended for with the same
+        // exclusive create as above.
+        const tomb = join(STATE_DIR, `.lock.stale-${process.pid}`);
+        renameSync(lock, tomb);
+        unlinkSync(tomb);
+        writeFileSync(lock, String(process.pid), { flag: "wx" });
         return true;
       }
     } catch {
-      // lock vanished or unreadable — skip this sweep, next event self-heals
+      // lock vanished, unreadable, or another stealer won — skip this sweep
     }
     return false;
   }
 }
 
-function releaseLock() {
+// The lock's mtime doubles as its liveness signal — refresh it between herdr
+// calls so a legitimately slow sweep isn't mistaken for a crashed one.
+function touchLock() {
   if (!STATE_DIR || DRY) return;
   try {
-    unlinkSync(join(STATE_DIR, ".lock"));
+    const now = new Date();
+    utimesSync(join(STATE_DIR, ".lock"), now, now);
+  } catch {
+    // lock gone (stolen after a stall) — nothing to refresh
+  }
+}
+
+function releaseLock() {
+  if (!STATE_DIR || DRY) return;
+  const lock = join(STATE_DIR, ".lock");
+  try {
+    // Only remove a lock we still own — after a stall past LOCK_STALE_MS ours
+    // may have been stolen, and the file now serializes someone else's sweep.
+    if (readFileSync(lock, "utf8") === String(process.pid)) unlinkSync(lock);
   } catch {
     // already gone — fine
   }
 }
 
-// Events can burst (several subscriptions can fire off one user action) — skip
-// if a full sweep ran within the last DEBOUNCE_MS.
-function debounced() {
-  if (!STATE_DIR || DRY) return false;
-  const stamp = join(STATE_DIR, ".last-sweep");
+const sleep = (ms) =>
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// .last-sweep's mtime records when the most recent sweep STARTED (only a
+// sweep that started after an event arrived can have seen that event's
+// effects — see the entrypoint).
+function lastSweepStart() {
   try {
-    if (Date.now() - statSync(stamp).mtimeMs < DEBOUNCE_MS) return true;
+    return statSync(join(STATE_DIR, ".last-sweep")).mtimeMs;
   } catch {
-    // no stamp yet
+    return 0;
   }
+}
+
+function stampSweepStart() {
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    closeSync(openSync(stamp, "w"));
+    closeSync(openSync(join(STATE_DIR, ".last-sweep"), "w"));
   } catch {
-    // stamp write failing just means no debounce — harmless
+    // stamp write failing just means extra sweeps — harmless
   }
-  return false;
 }
 
 function main() {
-  if (debounced()) return;
-
   const tabs = herdr("tab", "list")?.result?.tabs;
   const panes = herdr("pane", "list")?.result?.panes;
   if (!Array.isArray(tabs) || !Array.isArray(panes)) {
@@ -226,6 +269,7 @@ function main() {
     }
   }
 
+  const plan = [];
   for (const tab of tabs) {
     const tabId = tab?.tab_id;
     const label = tab?.label;
@@ -255,17 +299,30 @@ function main() {
       warn(`[dry-run] would rename ${tabId} "${label}" -> "${want}"`);
       continue;
     }
-    try {
-      herdr("tab", "rename", tabId, want);
-      state[tabId] = want;
-      stateDirty = true;
-      warn(`renamed ${tabId} "${label}" -> "${want}"`);
-    } catch (e) {
-      warn(`rename ${tabId} failed: ${e.message}`);
-    }
+    plan.push({ tabId, label, want });
   }
 
-  if (stateDirty) writeState(state);
+  // Persist intent BEFORE renaming: if a rename landed but the state write
+  // didn't, the next sweep would misread our own label as user-named and lock
+  // the tab out permanently. The reverse failure (intent recorded, rename
+  // lost) is harmless — the label stays default-eligible and self-heals on
+  // the next sweep.
+  for (const p of plan) state[p.tabId] = p.want;
+  if ((stateDirty || plan.length > 0) && !writeState(state)) return;
+
+  for (const p of plan) {
+    touchLock();
+    try {
+      // Re-read the label at the last moment: the list snapshot is stale by
+      // now, and a manual rename landing mid-sweep must win.
+      const live = herdr("tab", "get", p.tabId)?.result?.tab?.label;
+      if (live !== p.label) continue;
+      herdr("tab", "rename", p.tabId, p.want);
+      warn(`renamed ${p.tabId} "${p.label}" -> "${p.want}"`);
+    } catch (e) {
+      warn(`rename ${p.tabId} failed: ${e.message}`);
+    }
+  }
 }
 
 // Outside herdr (no state dir) a real run would rename tabs without recording
@@ -275,12 +332,37 @@ if (!STATE_DIR && !DRY) {
   warn(
     "HERDR_PLUGIN_STATE_DIR is not set (not running under herdr?); refusing to rename without state tracking — use --dry-run to preview",
   );
-} else if (acquireLock()) {
+} else if (DRY) {
   try {
     main();
   } catch (e) {
     warn(e.message); // fail safe: any surprise is a no-op
-  } finally {
-    releaseLock();
+  }
+} else {
+  // An in-flight sweep may have read herdr's state BEFORE the change that
+  // fired this event, so "a sweep is already running" is not coverage — this
+  // event is covered only by a sweep that STARTED after it arrived. On
+  // contention, wait briefly and re-check rather than fire-and-forget
+  // skipping (which would leave a label stale until some unrelated future
+  // event). Give up after RETRY_WINDOW_MS; herdr events are frequent enough
+  // that a later sweep self-heals a rare miss.
+  const arrival = Date.now();
+  for (;;) {
+    if (lastSweepStart() > arrival) break; // a newer sweep covered this event
+    if (acquireLock()) {
+      try {
+        if (lastSweepStart() <= arrival) {
+          stampSweepStart();
+          main();
+        }
+      } catch (e) {
+        warn(e.message); // fail safe: any surprise is a no-op
+      } finally {
+        releaseLock();
+      }
+      break;
+    }
+    if (Date.now() - arrival > RETRY_WINDOW_MS) break;
+    sleep(50);
   }
 }

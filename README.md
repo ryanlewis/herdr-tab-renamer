@@ -1,10 +1,10 @@
 # herdr Tab Renamer
 
 A [herdr](https://herdr.dev) plugin that keeps default-named tabs labelled
-after their live content. A tab running an agent becomes
-`1 ✦ claude · pr reviews` (number, agent, session title); a plain shell tab
-becomes `1 ⌂ ~/dev/notes` (number, current directory). A tab you renamed
-yourself is never touched — manual names win, permanently.
+after their live content. A tab running an agent becomes `1 · pr reviews`
+(number, live session title — or `1 · claude` until a title exists); a plain
+shell tab becomes `1 ⌂ ~/dev/notes` (number, current directory). A tab you
+renamed yourself is never touched — manual names win, permanently.
 
 ## Why
 
@@ -15,10 +15,12 @@ summary, or the shell's directory — so this plugin makes the label follow it.
 
 ## Behaviour
 
-- A default-named tab running an agent is labelled `<number> ✦ <agent>`, with
-  ` · <session title>` appended once the agent has one (lowercased, capped at
-  30 characters). The title is the agent's terminal title — for Claude Code
-  that's the live task summary, updated as work progresses.
+- A default-named tab running an agent is labelled `<number> · <title>`,
+  where the title is the agent's terminal title (lowercased, capped at 30
+  characters) — for Claude Code that's the live task summary, updated as work
+  progresses. Until a real title exists (the pre-summary product-name titles
+  like "claude code" are treated as no title), the agent's name stands in:
+  `<number> · claude`.
 - A default-named tab with only a shell is labelled `<number> ⌂ <directory>`
   (`~`-shortened, long paths capped keeping the tail).
 - When the agent exits back to the shell, the label follows.
@@ -33,9 +35,18 @@ summary, or the shell's directory — so this plugin makes the label follow it.
 
 On each herdr event the plugin reads `herdr tab list` and `herdr pane list`,
 computes the label each tab should have, and renames a tab only when its
-current label is the default (the bare tab number) or the plugin's own last
-write, tracked in plugin state. The agent session title comes from the pane's
-`terminal_title_stripped` field — the OSC title herdr already captures.
+current label is the default (its display position — herdr renumbers default
+labels live as tabs close) or the plugin's own last write, tracked in plugin
+state. The agent session title comes from the pane's `terminal_title_stripped`
+field — the OSC title herdr already captures. Just before each rename the tab's
+label is re-read, so a manual rename landing mid-sweep always wins.
+
+Event mapping, as observed on herdr 0.8.0: agent start and agent-quit-to-shell
+both arrive via `pane.agent_detected`/`pane.agent_status_changed`
+re-evaluation (`pane.exited` does *not* fire when an agent quits — the pane
+survives); title updates are picked up by the status/focus events. Since every
+event triggers a full reconcile, the mapping only affects latency, never
+correctness.
 
 Fail-safe by design: any parse or shape surprise is a silent no-op with one
 line to stderr (visible via
@@ -91,6 +102,10 @@ no-op-happy global reconciles, so sharing trigger events is cheap.
 node test/rename.test.mjs   # offline: fake herdr CLI
 node rename.mjs --dry-run   # against live herdr state, prints planned renames
 ```
+
+`--dry-run` outside herdr reads the real plugin state directory (if present),
+so the preview matches what event-driven runs would actually do — including
+updates to tabs the plugin already owns.
 
 Tests use the built-in `node:test` runner — Node ≥ 20 for development. (The
 test file is run directly rather than via `node --test`: glob arguments need

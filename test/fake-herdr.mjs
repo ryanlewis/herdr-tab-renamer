@@ -19,6 +19,18 @@ if (group === "tab" && verb === "list") {
   process.stdout.write(
     JSON.stringify({ id: "cli:pane:list", result: { panes: world.panes, type: "pane_list" } }),
   );
+} else if (group === "tab" && verb === "get") {
+  const t = (world.tabs || []).find((x) => x.tab_id === rest[0]);
+  if (!t) {
+    process.stderr.write("tab not found\n");
+    process.exit(1);
+  }
+  // live_labels lets a test simulate a label changing between the sweep's
+  // `tab list` snapshot and its pre-rename `tab get` re-check.
+  const label = world.live_labels?.[rest[0]] ?? t.label;
+  process.stdout.write(
+    JSON.stringify({ id: "cli:tab:get", result: { tab: { ...t, label }, type: "tab_info" } }),
+  );
 } else if (group === "tab" && verb === "rename") {
   appendFileSync(process.env.FAKE_HERDR_CALLS, JSON.stringify(rest) + "\n");
   process.stdout.write(JSON.stringify({ id: "cli:tab:rename", result: { ok: true } }));

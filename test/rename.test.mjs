@@ -59,7 +59,7 @@ const shellPane = (paneId, tabId, cwd, extra = {}) => ({
 });
 
 // One sandbox per scenario: fresh HOME, world file, calls log, state dir.
-function run({ world, state, lockAgeMs, noStateDir, args = [] }) {
+function run({ world, state, lockAgeMs, noStateDir, stateUnwritable, args = [] }) {
   const dir = mkdtempSync(join(tmpdir(), "tabren-test-"));
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true });
@@ -72,6 +72,9 @@ function run({ world, state, lockAgeMs, noStateDir, args = [] }) {
   const stateDir = join(dir, "state");
   mkdirSync(stateDir);
   if (state) writeFileSync(join(stateDir, "state.json"), JSON.stringify(state));
+  // A directory at state.json makes writeState's atomic rename fail while
+  // everything else (lock, stamp) still works.
+  if (stateUnwritable) mkdirSync(join(stateDir, "state.json"));
   if (lockAgeMs !== undefined) {
     const lock = join(stateDir, ".lock");
     writeFileSync(lock, "99999");
@@ -103,25 +106,27 @@ function run({ world, state, lockAgeMs, noStateDir, args = [] }) {
   return { calls, stateAfter, lockLeft, stderr: r.stderr, status: r.status };
 }
 
-test("agent tab without a title gets `<n> ✦ <agent>`", () => {
+// ---- agent-tab labels --------------------------------------------------
+
+test("agent tab without a title falls back to `<n> · <agent>`", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
       panes: [agentPane("w1:p1", "w1:t1", undefined)],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude"]], r.stderr);
-  assert.equal(r.stateAfter["w1:t1"], "1 ✦ claude", "rename recorded in plugin state");
+  assert.deepEqual(r.calls, [["w1:t1", "1 · claude"]], r.stderr);
+  assert.equal(r.stateAfter["w1:t1"], "1 · claude", "rename recorded in plugin state");
 });
 
-test("agent tab with a title gets ` · <title>` lowercased", () => {
+test("agent tab with a title shows the title alone, lowercased", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
       panes: [agentPane("w1:p1", "w1:t1", "PR Reviews")],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · pr reviews"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · pr reviews"]], r.stderr);
 });
 
 test("long title capped at 30 code points", () => {
@@ -133,8 +138,7 @@ test("long title capped at 30 code points", () => {
       ],
     },
   });
-  assert.equal(r.calls.length, 1, r.stderr);
-  assert.equal(r.calls[0][1], "1 ✦ claude · implement get /v1/recent admin");
+  assert.deepEqual(r.calls, [["w1:t1", "1 · implement get /v1/recent admin"]], r.stderr);
 });
 
 test("title cap counts code points, never splits a surrogate pair", () => {
@@ -144,27 +148,39 @@ test("title cap counts code points, never splits a surrogate pair", () => {
       panes: [agentPane("w1:p1", "w1:t1", "🚀".repeat(40))],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", `1 ✦ claude · ${"🚀".repeat(30)}`]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", `1 · ${"🚀".repeat(30)}`]], r.stderr);
 });
 
-test("title that just echoes the agent name is dropped", () => {
+test("non-ASCII title kept verbatim", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
-      panes: [agentPane("w1:p1", "w1:t1", "Claude")],
+      panes: [agentPane("w1:p1", "w1:t1", "日本語のタスク")],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · 日本語のタスク"]], r.stderr);
 });
 
-test("pre-summary product-name title ('claude code') is dropped", () => {
+test("pre-summary product-name titles fall back to the agent name", () => {
+  for (const noise of ["Claude", "Claude Code", "claude: notes"]) {
+    const r = run({
+      world: {
+        tabs: [tab("w1:t1", 1, "1")],
+        panes: [agentPane("w1:p1", "w1:t1", noise)],
+      },
+    });
+    assert.deepEqual(r.calls, [["w1:t1", "1 · claude"]], `title ${noise}: ${r.stderr}`);
+  }
+});
+
+test("title merely resembling the agent name is kept", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
-      panes: [agentPane("w1:p1", "w1:t1", "Claude Code")],
+      panes: [agentPane("w1:p1", "w1:t1", "claude-code")],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · claude-code"]], r.stderr);
 });
 
 test("title control chars stripped, whitespace collapsed", () => {
@@ -174,8 +190,30 @@ test("title control chars stripped, whitespace collapsed", () => {
       panes: [agentPane("w1:p1", "w1:t1", "  Fix\tthe   thing\x07 ")],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · fix the thing"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · fix the thing"]], r.stderr);
 });
+
+test("control char flanked by spaces collapses to a single space", () => {
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "1")],
+      panes: [agentPane("w1:p1", "w1:t1", "fix \x07 thing")],
+    },
+  });
+  assert.deepEqual(r.calls, [["w1:t1", "1 · fix thing"]], r.stderr);
+});
+
+test("agent pane with empty title string falls back to the agent name", () => {
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "1")],
+      panes: [agentPane("w1:p1", "w1:t1", "")],
+    },
+  });
+  assert.deepEqual(r.calls, [["w1:t1", "1 · claude"]], r.stderr);
+});
+
+// ---- shell-tab labels --------------------------------------------------
 
 test("shell tab gets `<n> ⌂ <~cwd>`", () => {
   const r = run({
@@ -206,11 +244,10 @@ test("long shell cwd capped from the left, tail kept", () => {
     },
   });
   assert.equal(r.calls.length, 1, r.stderr);
-  const got = r.calls[0][1];
-  const path = got.slice("1 ⌂ ".length);
-  assert.ok(path.startsWith("…"), got);
-  assert.equal([...path].length, 31, got); // … + 30 code points of tail
-  assert.ok(deep.endsWith([...path].slice(1).join("")), got);
+  const path = r.calls[0][1].slice("1 ⌂ ".length);
+  assert.ok(path.startsWith("…"), path);
+  assert.equal([...path].length, 31, path); // … + 30 code points of tail
+  assert.ok(deep.endsWith([...path].slice(1).join("")), path);
 });
 
 test("shell pane prefers foreground_cwd over cwd", () => {
@@ -225,13 +262,15 @@ test("shell pane prefers foreground_cwd over cwd", () => {
   assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/dev/elsewhere"]], r.stderr);
 });
 
+// ---- ownership guard ---------------------------------------------------
+
 test("manually renamed tab never touched; state entry dropped", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "user-chose-this")],
       panes: [agentPane("w1:p1", "w1:t1", "some title")],
     },
-    state: { "w1:t1": "1 ✦ claude · old" },
+    state: { "w1:t1": "1 · old" },
   });
   assert.deepEqual(r.calls, []);
   assert.ok(!("w1:t1" in r.stateAfter), "state entry dropped when user overrides label");
@@ -250,21 +289,21 @@ test("non-default label with no state: untouched", () => {
 test("re-rename updates a label the plugin set (title changed)", () => {
   const r = run({
     world: {
-      tabs: [tab("w1:t1", 1, "1 ✦ claude · old task")],
+      tabs: [tab("w1:t1", 1, "1 · old task")],
       panes: [agentPane("w1:p1", "w1:t1", "new task")],
     },
-    state: { "w1:t1": "1 ✦ claude · old task" },
+    state: { "w1:t1": "1 · old task" },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · new task"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · new task"]], r.stderr);
 });
 
 test("agent exit back to shell relabels an owned tab", () => {
   const r = run({
     world: {
-      tabs: [tab("w1:t1", 1, "1 ✦ claude · task")],
+      tabs: [tab("w1:t1", 1, "1 · task")],
       panes: [shellPane("w1:p1", "w1:t1", "$HOME/dev/notes")],
     },
-    state: { "w1:t1": "1 ✦ claude · task" },
+    state: { "w1:t1": "1 · task" },
   });
   assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/dev/notes"]], r.stderr);
 });
@@ -272,13 +311,26 @@ test("agent exit back to shell relabels an owned tab", () => {
 test("no-op when label already matches", () => {
   const r = run({
     world: {
-      tabs: [tab("w1:t1", 1, "1 ✦ claude · task")],
+      tabs: [tab("w1:t1", 1, "1 · task")],
       panes: [agentPane("w1:p1", "w1:t1", "task")],
     },
-    state: { "w1:t1": "1 ✦ claude · task" },
+    state: { "w1:t1": "1 · task" },
   });
   assert.deepEqual(r.calls, []);
 });
+
+test("mid-sweep manual rename wins (pre-rename live re-check)", () => {
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "1")],
+      panes: [agentPane("w1:p1", "w1:t1", "task")],
+      live_labels: { "w1:t1": "deploys" },
+    },
+  });
+  assert.deepEqual(r.calls, [], r.stderr);
+});
+
+// ---- pane pick ---------------------------------------------------------
 
 test("split tab: first agent pane wins over a lower-numbered shell", () => {
   const r = run({
@@ -290,7 +342,7 @@ test("split tab: first agent pane wins over a lower-numbered shell", () => {
       ],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · the task"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · the task"]], r.stderr);
 });
 
 test("split tab: two agents — lowest pane number wins, regardless of list order", () => {
@@ -303,7 +355,7 @@ test("split tab: two agents — lowest pane number wins, regardless of list orde
       ],
     },
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · first pane"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · first pane"]], r.stderr);
 });
 
 test("all-shell split: focused pane wins", () => {
@@ -332,26 +384,7 @@ test("all-shell split with no focus: lowest pane wins", () => {
   assert.deepEqual(r.calls, [["w1:t1", "1 ⌂ ~/one"]], r.stderr);
 });
 
-test("global sweep renames only eligible tabs", () => {
-  const r = run({
-    world: {
-      tabs: [
-        tab("w1:t1", 1, "1"),
-        tab("w1:t2", 2, "manual-label"),
-        tab("w2:t1", 1, "1"),
-      ],
-      panes: [
-        agentPane("w1:p1", "w1:t1", "task one"),
-        agentPane("w1:p2", "w1:t2", "blocked task"),
-        shellPane("w2:p1", "w2:t1", "$HOME/dev/notes"),
-      ],
-    },
-  });
-  assert.deepEqual(Object.fromEntries(r.calls), {
-    "w1:t1": "1 ✦ claude · task one",
-    "w2:t1": "1 ⌂ ~/dev/notes",
-  }, r.stderr);
-});
+// ---- positions (default label = display ordinal) -----------------------
 
 test("default label is display position, not tab number (gap after closed tabs)", () => {
   // Tabs 2–4 were closed: t5 is the workspace's 2nd tab, default label "2".
@@ -394,16 +427,39 @@ test("positions are per-workspace, in list order", () => {
   }, r.stderr);
 });
 
+// ---- sweep behaviour ---------------------------------------------------
+
+test("global sweep renames only eligible tabs", () => {
+  const r = run({
+    world: {
+      tabs: [
+        tab("w1:t1", 1, "1"),
+        tab("w1:t2", 2, "manual-label"),
+        tab("w2:t1", 1, "1"),
+      ],
+      panes: [
+        agentPane("w1:p1", "w1:t1", "task one"),
+        agentPane("w1:p2", "w1:t2", "blocked task"),
+        shellPane("w2:p1", "w2:t1", "$HOME/dev/notes"),
+      ],
+    },
+  });
+  assert.deepEqual(Object.fromEntries(r.calls), {
+    "w1:t1": "1 · task one",
+    "w2:t1": "1 ⌂ ~/dev/notes",
+  }, r.stderr);
+});
+
 test("dead tab's state entry pruned", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
       panes: [agentPane("w1:p1", "w1:t1", "task")],
     },
-    state: { "w9:t9": "1 ✦ claude · gone" },
+    state: { "w9:t9": "1 · gone" },
   });
   assert.ok(!("w9:t9" in r.stateAfter), "dead tab pruned from state");
-  assert.equal(r.stateAfter["w1:t1"], "1 ✦ claude · task");
+  assert.equal(r.stateAfter["w1:t1"], "1 · task");
 });
 
 test("tab with no panes: safe skip", () => {
@@ -417,14 +473,26 @@ test("tab with no panes: safe skip", () => {
   assert.equal(r.status, 0);
 });
 
-test("agent pane with empty title string: no separator dangling", () => {
+test("malformed herdr output: safe no-op, exit 0", () => {
+  const r = run({ world: { tabs: "nonsense", panes: [] } });
+  assert.deepEqual(r.calls, []);
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /unexpected herdr list output shape/);
+});
+
+// ---- state & lock safety ----------------------------------------------
+
+test("state write failure aborts all renames (no rename without recorded ownership)", () => {
   const r = run({
     world: {
       tabs: [tab("w1:t1", 1, "1")],
-      panes: [agentPane("w1:p1", "w1:t1", "")],
+      panes: [agentPane("w1:p1", "w1:t1", "task")],
     },
+    stateUnwritable: true,
   });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude"]], r.stderr);
+  assert.deepEqual(r.calls, [], r.stderr);
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /state write failed/);
 });
 
 const lockScenario = {
@@ -434,7 +502,7 @@ const lockScenario = {
   },
 };
 
-test("fresh lock held by another sweep: skipped, lock preserved", () => {
+test("fresh lock held by another sweep: skipped after bounded retry, lock preserved", () => {
   const r = run({ ...lockScenario, lockAgeMs: 0 });
   assert.deepEqual(r.calls, []);
   assert.ok(r.lockLeft, "foreign lock must not be removed");
@@ -443,13 +511,13 @@ test("fresh lock held by another sweep: skipped, lock preserved", () => {
 
 test("stale lock stolen: sweep proceeds, lock released", () => {
   const r = run({ ...lockScenario, lockAgeMs: 60_000 });
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · task"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · task"]], r.stderr);
   assert.ok(!r.lockLeft);
 });
 
 test("normal run releases the lock", () => {
   const r = run(lockScenario);
-  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude · task"]], r.stderr);
+  assert.deepEqual(r.calls, [["w1:t1", "1 · task"]], r.stderr);
   assert.ok(!r.lockLeft);
 });
 
@@ -460,16 +528,22 @@ test("no state dir and no --dry-run: refuses to run, renames nothing", () => {
   assert.match(r.stderr, /refusing to rename/);
 });
 
-test("--dry-run previews without renaming", () => {
+test("--dry-run previews without renaming or writing state", () => {
   const r = run({ ...lockScenario, args: ["--dry-run"] });
   assert.deepEqual(r.calls, []);
-  assert.match(r.stderr, /would rename w1:t1 "1" -> "1 ✦ claude · task"/);
+  assert.match(r.stderr, /would rename w1:t1 "1" -> "1 · task"/);
   assert.deepEqual(r.stateAfter, {}, "dry-run writes no state");
 });
 
-test("malformed herdr output: safe no-op, exit 0", () => {
-  const r = run({ world: { tabs: "nonsense", panes: [] } });
+test("--dry-run reads existing state, so owned tabs preview their update", () => {
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "1 · old task")],
+      panes: [agentPane("w1:p1", "w1:t1", "new task")],
+    },
+    state: { "w1:t1": "1 · old task" },
+    args: ["--dry-run"],
+  });
   assert.deepEqual(r.calls, []);
-  assert.equal(r.status, 0);
-  assert.match(r.stderr, /unexpected herdr list output shape/);
+  assert.match(r.stderr, /would rename w1:t1 "1 · old task" -> "1 · new task"/);
 });
