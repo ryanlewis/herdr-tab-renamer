@@ -1,0 +1,31 @@
+id = "io.rlew.tab-renamer"
+name = "Tab Renamer"
+description = "Keep default-named herdr tabs labelled after their live content"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+platforms = ["macos", "linux"]
+
+[[events]]
+on = "pane.agent_detected"         # agent starts in a pane
+command = ["node", "rename.mjs"]
+[[events]]
+on = "pane.agent_status_changed"   # main heartbeat: fires on every turn boundary
+command = ["node", "rename.mjs"]
+[[events]]
+on = "pane.exited"                 # agent quit back to the shell
+command = ["node", "rename.mjs"]
+[[events]]
+on = "pane.created"                # fresh tab/split gets named immediately
+command = ["node", "rename.mjs"]
+[[events]]
+on = "pane.closed"                 # surviving pane may now own the tab
+command = ["node", "rename.mjs"]
+[[events]]
+on = "pane.focused"                # cheap re-eval; covers title-update lag
+command = ["node", "rename.mjs"]
+
+[[actions]]
+id = "rename-now"
+title = "Rename tabs now"
+contexts = ["workspace"]
+command = ["node", "rename.mjs"]
