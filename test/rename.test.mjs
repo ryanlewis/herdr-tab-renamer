@@ -157,6 +157,16 @@ test("title that just echoes the agent name is dropped", () => {
   assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude"]], r.stderr);
 });
 
+test("pre-summary product-name title ('claude code') is dropped", () => {
+  const r = run({
+    world: {
+      tabs: [tab("w1:t1", 1, "1")],
+      panes: [agentPane("w1:p1", "w1:t1", "Claude Code")],
+    },
+  });
+  assert.deepEqual(r.calls, [["w1:t1", "1 ✦ claude"]], r.stderr);
+});
+
 test("title control chars stripped, whitespace collapsed", () => {
   const r = run({
     world: {

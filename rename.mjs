@@ -98,8 +98,11 @@ function computeLabel(tab, panes) {
     const raw = pane.terminal_title_stripped;
     if (typeof raw === "string") {
       const title = cleanTitle(raw);
-      // A title that just echoes the agent's name adds nothing — skip it.
-      if (title && title !== pane.agent.toLowerCase()) label += `${SEP}${title}`;
+      // Before the first task summary, agents title the terminal with their
+      // own product name ("claude", "claude code") — that adds nothing, skip.
+      const norm = (s) => s.replace(/[^a-z0-9]+/g, "");
+      const noise = [norm(pane.agent.toLowerCase()), norm(pane.agent.toLowerCase()) + "code"];
+      if (title && !noise.includes(norm(title))) label += `${SEP}${title}`;
     }
     return label;
   }
