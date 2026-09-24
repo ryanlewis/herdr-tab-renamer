@@ -1,5 +1,17 @@
 # herdr Tab Renamer
 
+> [!WARNING]
+> **No longer maintained.** This repository is archived. Use
+> [kryptamine/herdr-auto-title](https://github.com/kryptamine/herdr-auto-title)
+> instead: it names tabs and panes after their live content and leaves names
+> you set yourself alone.
+>
+> ```sh
+> herdr plugin uninstall io.rlew.tab-renamer
+> herdr plugin install kryptamine/herdr-auto-title
+> herdr plugin action invoke herdr.auto-title.restart
+> ```
+
 A [herdr](https://herdr.dev) plugin that keeps default-named tabs labelled
 after their live content. A tab running an agent becomes `1 · pr reviews`
 (number, live session title — or `1 · claude` until a title exists); a plain
